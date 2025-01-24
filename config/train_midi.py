@@ -3,11 +3,11 @@ out_dir = 'out-midi'
 eval_interval = 100
 eval_iters = 50
 log_interval = 1
-save_interval = 10
+save_interval = 1
 
 # Data settings
 dataset = 'combined_dataset.txt'
-gradient_accumulation_steps = 4  # Allows larger effective batch size
+gradient_accumulation_steps = 8  # Allows larger effective batch size
 batch_size = 64  # Reduce if OOM occurs
 block_size = 256  # Balance context length vs memory
 
@@ -27,8 +27,8 @@ grad_clip = 1.0
 
 # Learning rate schedule
 decay_lr = True
-warmup_iters = 100
-lr_decay_iters = 800
+warmup_iters = 200
+lr_decay_iters = 1000
 min_lr = 1e-5
 
 # System

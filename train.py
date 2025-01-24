@@ -154,7 +154,6 @@ def main(args):
                         preds = torch.argmax(logits, dim=-1)
                         val_correct += (preds == val_y).sum().item()
                         val_tokens += val_y.numel()
-
                 avg_val_loss = val_loss / min(config_dict['eval_iters'], len(val_loader))
                 val_acc = val_correct / val_tokens
                 
