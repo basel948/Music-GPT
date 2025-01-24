@@ -9,15 +9,12 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset import TextDataset
 import time
 import datetime
-from datetime import timedelta  # Add this line
+from datetime import timedelta
+from tqdm import tqdm  # Import tqdm
+
 # Logging utilities
 def format_time(seconds):
     return str(timedelta(seconds=int(seconds)))
-
-def progress_bar(current, total, length=30):
-    filled = int(round(length * current / total))
-    bar = '■' * filled + ' ' * (length - filled)
-    return f"[{bar}] {current}/{total}"
 
 def get_lr(it, warmup_iters, lr_decay_iters, min_lr, max_lr):
     if it < warmup_iters:
@@ -35,7 +32,10 @@ def main(args):
     
     # Setup
     os.makedirs(config_dict['out_dir'], exist_ok=True)
-    writer = SummaryWriter(log_dir=os.path.join(config_dict['out_dir'], "logs"))
+    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = os.path.join(config_dict['out_dir'], "logs", run_id)
+    writer = SummaryWriter(log_dir=log_dir)  # Modified line
+    
     device = torch.device(config_dict.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
     
     # Data
@@ -87,7 +87,13 @@ def main(args):
         total_tokens = 0
         optimizer.zero_grad()
 
-        for batch_idx, (x, y) in enumerate(train_loader):
+        # Initialize tqdm progress bar
+        pbar = tqdm(train_loader, 
+                desc=f"Epoch {epoch+1}/{total_epochs}".ljust(20),
+                bar_format="{l_bar}{bar:20}{r_bar}",
+                dynamic_ncols=True,
+                leave=True)
+        for batch_idx, (x, y) in enumerate(pbar):
             # LR scheduling
             if config_dict['decay_lr']:
                 lr = get_lr(global_step, config_dict['warmup_iters'],
@@ -120,22 +126,17 @@ def main(args):
                 optimizer.zero_grad()
                 global_step += 1
 
-            # Progress bar
+            # Update progress bar
             elapsed = time.time() - epoch_start
             samples_sec = (batch_idx + 1) * config_dict['batch_size'] / elapsed
             avg_loss = total_loss / (batch_idx + 1)
             avg_acc = total_correct / total_tokens
-            
-            if batch_idx % 10 == 0 or batch_idx == len(train_loader)-1:
-                sys.stdout.write('\r\033[K')
-                sys.stdout.write(
-                    f"Epoch {epoch+1}/{total_epochs} "
-                    f"{progress_bar(batch_idx+1, len(train_loader))} | "
-                    f"Loss: {avg_loss:.4f} | Acc: {avg_acc:.4f} | "
-                    f"LR: {lr:.2e} | {samples_sec:.0f} samples/s | "
-                    f"Elapsed: {format_time(elapsed)}"
-                )
-                sys.stdout.flush()
+            pbar.set_postfix(ordered_dict={
+                'loss': f"{avg_loss:.4f}",
+                'acc': f"{avg_acc:.4f}",
+                'lr': f"{lr:.1e}",
+                'smp/s': f"{samples_sec:.0f}"
+            }, refresh=False)
 
             # Validation
             if global_step % config_dict['eval_interval'] == 0 and (batch_idx + 1) % grad_accum_steps == 0:
@@ -163,21 +164,23 @@ def main(args):
                 writer.add_scalar('Loss/val', avg_val_loss, global_step)
                 writer.add_scalar('Accuracy/val', val_acc, global_step)
                 
-                # Print validation results
-                sys.stdout.write(f"\n{'='*60}\n")
-                sys.stdout.write(f"Validation @ step {global_step} | "
-                               f"Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}\n")
-                sys.stdout.write(f"{'='*60}\n")
+                # Print validation results using tqdm to avoid breaking the progress bar
+                pbar.write("\n" + "=" * 60)
+                pbar.write(f"Validation @ step {global_step} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}")
+                pbar.write("=" * 60 + "\n")
                 model.train()
+
+        # Close the progress bar for the current epoch
+        pbar.close()
 
         # Epoch summary
         epoch_time = time.time() - epoch_start
         avg_epoch_loss = total_loss / len(train_loader)
         avg_epoch_acc = total_correct / total_tokens
         
-        sys.stdout.write(f"\nEpoch {epoch+1} Summary | "
-                       f"Loss: {avg_epoch_loss:.4f} | Acc: {avg_epoch_acc:.4f} | "
-                       f"Time: {format_time(epoch_time)}\n")
+        print(f"\nEpoch {epoch+1} Summary | "
+              f"Loss: {avg_epoch_loss:.4f} | Acc: {avg_epoch_acc:.4f} | "
+              f"Time: {format_time(epoch_time)}")
         
         # Save checkpoint
         if (epoch + 1) % config_dict['save_interval'] == 0:
@@ -188,7 +191,7 @@ def main(args):
                 'optimizer_state': optimizer.state_dict(),
                 'loss': avg_epoch_loss,
             }, ckpt_path)
-            sys.stdout.write(f"Saved checkpoint to {ckpt_path}\n")
+            print(f"Saved checkpoint to {ckpt_path}")
 
     writer.close()
 
