@@ -2,37 +2,38 @@ import os
 import torch
 from torch.utils.data import Dataset
 
-class TextDataset(Dataset):
+class TextDataset(torch.utils.data.Dataset):
     def __init__(self, data_path, block_size):
         self.block_size = block_size
+        self.sequences = []
 
-        # Load data as tokens (words like "n60", "d4")
         with open(data_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
         
-        # Split each line into tokens
-        self.tokens = []
         for line in lines:
             line = line.strip()
-            if line:  # Skip empty lines
-                self.tokens.extend(line.split())
+            if line:
+                tokens = line.split()
+                self.sequences.append(tokens)
 
-        # Build vocabulary
-        self.vocab = sorted(list(set(self.tokens)))
+        self.vocab = sorted(list({token for seq in self.sequences for token in seq}))
         self.vocab_size = len(self.vocab)
         self.stoi = {token: i for i, token in enumerate(self.vocab)}
         self.itos = {i: token for i, token in enumerate(self.vocab)}
-        
-        # Encode tokens to integers
-        self.data = [self.stoi[token] for token in self.tokens]
+
+        self.windows = []
+        for seq in self.sequences:
+            seq_len = len(seq)
+            if seq_len >= block_size:
+                for i in range(seq_len - block_size + 1):
+                    self.windows.append((seq, i))
 
     def __len__(self):
-        # Number of possible sequences of length block_size
-        return max(0, len(self.data) - self.block_size + 1)
+        return len(self.windows)
 
     def __getitem__(self, idx):
-        # Return a block of block_size tokens (x=input, y=target)
-        chunk = self.data[idx : idx + self.block_size]
-        x = torch.tensor(chunk[:-1], dtype=torch.long)  # Input (up to last token)
-        y = torch.tensor(chunk[1:], dtype=torch.long)   # Target (shifted by 1)
+        seq, start_idx = self.windows[idx]
+        chunk = seq[start_idx : start_idx + self.block_size]
+        x = torch.tensor([self.stoi[token] for token in chunk[:-1]], dtype=torch.long)
+        y = torch.tensor([self.stoi[token] for token in chunk[1:]], dtype=torch.long)
         return x, y
