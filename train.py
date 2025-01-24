@@ -77,7 +77,7 @@ def main(args):
     global_step = 0
     grad_accum_steps = config_dict['gradient_accumulation_steps']
     total_epochs = config_dict['max_iters']
-    
+    total_batches = 0
     # Main loop
     for epoch in range(total_epochs):
         model.train()
@@ -94,6 +94,7 @@ def main(args):
                 dynamic_ncols=True,
                 leave=True)
         for batch_idx, (x, y) in enumerate(pbar):
+            total_batches += 1
             # LR scheduling
             if config_dict['decay_lr']:
                 lr = get_lr(global_step, config_dict['warmup_iters'],
@@ -137,7 +138,9 @@ def main(args):
                 'lr': f"{lr:.1e}",
                 'smp/s': f"{samples_sec:.0f}"
             }, refresh=False)
-
+            writer.add_scalar('Loss/train', avg_loss, total_batches)
+            writer.add_scalar('Accuracy/train', avg_acc, total_batches)
+            writer.add_scalar('Learning Rate', lr, total_batches)
             # Validation
             if global_step % config_dict['eval_interval'] == 0 and (batch_idx + 1) % grad_accum_steps == 0:
                 model.eval()
@@ -158,10 +161,8 @@ def main(args):
                 val_acc = val_correct / val_tokens
                 
                 # TensorBoard logging
-                writer.add_scalar('Loss/train', avg_loss, global_step)
-                writer.add_scalar('Accuracy/train', avg_acc, global_step)
-                writer.add_scalar('Loss/val', avg_val_loss, global_step)
-                writer.add_scalar('Accuracy/val', val_acc, global_step)
+                writer.add_scalar('Loss/val', avg_val_loss, total_batches)
+                writer.add_scalar('Accuracy/val', val_acc, total_batches)
                 
                 # Print validation results using tqdm to avoid breaking the progress bar
                 pbar.write("\n" + "=" * 60)
