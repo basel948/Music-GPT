@@ -1,37 +1,38 @@
 import os
+import torch
+from torch.utils.data import Dataset
 
-class TextDataset:
+class TextDataset(Dataset):
     def __init__(self, data_path, block_size):
         self.block_size = block_size
 
-        # Load the data from the file
+        # Load data as tokens (words like "n60", "d4")
         with open(data_path, 'r', encoding='utf-8') as f:
-            data = f.read()
+            lines = f.readlines()
+        
+        # Split each line into tokens
+        self.tokens = []
+        for line in lines:
+            line = line.strip()
+            if line:  # Skip empty lines
+                self.tokens.extend(line.split())
 
-        # Create vocabulary and encode data
-        self.chars = sorted(list(set(data)))
-        self.vocab_size = len(self.chars)
-        self.stoi = {ch: i for i, ch in enumerate(self.chars)}
-        self.itos = {i: ch for i, ch in enumerate(self.chars)}
-        self.data = [self.stoi[ch] for ch in data]
-
-    def get_split(self, split_type, split_ratio):
-        """
-        Splits the dataset into train/val.
-        :param split_type: 'train' or 'val'
-        :param split_ratio: Ratio for splitting the dataset.
-        :return: Data chunk for the split type.
-        """
-        split_idx = int(len(self.data) * split_ratio)
-        if split_type == 'train':
-            return self.data[:split_idx]
-        elif split_type == 'val':
-            return self.data[split_idx:]
-        else:
-            raise ValueError("split_type must be 'train' or 'val'")
+        # Build vocabulary
+        self.vocab = sorted(list(set(self.tokens)))
+        self.vocab_size = len(self.vocab)
+        self.stoi = {token: i for i, token in enumerate(self.vocab)}
+        self.itos = {i: token for i, token in enumerate(self.vocab)}
+        
+        # Encode tokens to integers
+        self.data = [self.stoi[token] for token in self.tokens]
 
     def __len__(self):
-        return len(self.data)
+        # Number of possible sequences of length block_size
+        return max(0, len(self.data) - self.block_size + 1)
 
     def __getitem__(self, idx):
-        return self.data[idx:idx + self.block_size]
+        # Return a block of block_size tokens (x=input, y=target)
+        chunk = self.data[idx : idx + self.block_size]
+        x = torch.tensor(chunk[:-1], dtype=torch.long)  # Input (up to last token)
+        y = torch.tensor(chunk[1:], dtype=torch.long)   # Target (shifted by 1)
+        return x, y
