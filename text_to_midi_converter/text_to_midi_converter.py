@@ -16,6 +16,12 @@ DURATION_PREFIX = "d"
 
 def text_to_midi(text_file, output_midi_path, tempo=120):
     """Convert text representation to a MIDI file."""
+
+        # Ensure the output directory exists
+    output_dir = os.path.dirname(output_midi_path)
+    if output_dir:  # Only create the directory if it's specified
+        os.makedirs(output_dir, exist_ok=True)
+
     # Read the text file
     with open(text_file, 'r') as f:
         content = f.read().strip()
@@ -48,9 +54,6 @@ def text_to_midi(text_file, output_midi_path, tempo=120):
             pitch = None  # Reset pitch after creating a note
         elif token == VALTSEP:
             stream.append(music21.note.Rest(quarterLength=0.25))  # Default quarter rest
-
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_midi_path), exist_ok=True)
 
     # Write the MIDI file
     stream.write('midi', fp=output_midi_path)

@@ -10,7 +10,7 @@ from dataset import TextDataset
 import time
 import datetime
 from datetime import timedelta
-from tqdm import tqdm  # Import tqdm
+from tqdm import tqdm
 
 # Logging utilities
 def format_time(seconds):
@@ -34,7 +34,7 @@ def main(args):
     os.makedirs(config_dict['out_dir'], exist_ok=True)
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = os.path.join(config_dict['out_dir'], "logs", run_id)
-    writer = SummaryWriter(log_dir=log_dir)  # Modified line
+    writer = SummaryWriter(log_dir=log_dir)
     
     device = torch.device(config_dict.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
     
@@ -65,6 +65,24 @@ def main(args):
                                 betas=(config_dict['beta1'], config_dict['beta2']),
                                 weight_decay=config_dict['weight_decay'])
     
+    # Training state
+    global_step = 0
+    total_batches = 0
+    start_epoch = 0
+    grad_accum_steps = config_dict['gradient_accumulation_steps']
+    total_epochs = config_dict['max_iters']
+
+    # Resume from checkpoint if specified
+    if args.resume_from:
+        print(f"Loading checkpoint from {args.resume_from}")
+        checkpoint = torch.load(args.resume_from)
+        model.load_state_dict(checkpoint['model_state'])
+        optimizer.load_state_dict(checkpoint['optimizer_state'])
+        start_epoch = checkpoint['epoch'] + 1
+        global_step = checkpoint['global_step']
+        total_batches = checkpoint['total_batches']
+        print(f"Resuming training from epoch {start_epoch} (global step {global_step})")
+
     # Dataloaders
     collate_fn = lambda batch: (torch.stack([x for x,y in batch]).to(device),
                                 torch.stack([y for x,y in batch]).to(device))
@@ -73,28 +91,24 @@ def main(args):
     val_loader = DataLoader(val_dataset, batch_size=config_dict['batch_size'],
                           collate_fn=collate_fn, drop_last=True)
 
-    # Training state
-    global_step = 0
-    grad_accum_steps = config_dict['gradient_accumulation_steps']
-    total_epochs = config_dict['max_iters']
-    total_batches = 0
     # Main loop
-    for epoch in range(total_epochs):
+    for epoch in range(start_epoch, total_epochs):
         model.train()
         epoch_start = time.time()
-        total_loss = 0.0
-        total_correct = 0
-        total_tokens = 0
+        epoch_loss = 0.0
+        epoch_correct = 0
+        epoch_tokens = 0
         optimizer.zero_grad()
 
-        # Initialize tqdm progress bar
         pbar = tqdm(train_loader, 
                 desc=f"Epoch {epoch+1}/{total_epochs}".ljust(20),
                 bar_format="{l_bar}{bar:20}{r_bar}",
                 dynamic_ncols=True,
                 leave=True)
+        
         for batch_idx, (x, y) in enumerate(pbar):
             total_batches += 1
+            
             # LR scheduling
             if config_dict['decay_lr']:
                 lr = get_lr(global_step, config_dict['warmup_iters'],
@@ -115,9 +129,9 @@ def main(args):
                 logits = outputs.logits
                 preds = torch.argmax(logits, dim=-1)
                 correct = (preds == y).sum().item()
-                total_correct += correct
-                total_tokens += y.numel()
-                total_loss += loss.item() * grad_accum_steps
+                epoch_correct += correct
+                epoch_tokens += y.numel()
+                epoch_loss += loss.item() * grad_accum_steps
 
             # Gradient accumulation
             if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(train_loader):
@@ -130,17 +144,19 @@ def main(args):
             # Update progress bar
             elapsed = time.time() - epoch_start
             samples_sec = (batch_idx + 1) * config_dict['batch_size'] / elapsed
-            avg_loss = total_loss / (batch_idx + 1)
-            avg_acc = total_correct / total_tokens
+            avg_loss = epoch_loss / (batch_idx + 1)
+            avg_acc = epoch_correct / epoch_tokens
             pbar.set_postfix(ordered_dict={
                 'loss': f"{avg_loss:.4f}",
                 'acc': f"{avg_acc:.4f}",
                 'lr': f"{lr:.1e}",
                 'smp/s': f"{samples_sec:.0f}"
             }, refresh=False)
+            
             writer.add_scalar('Loss/train', avg_loss, total_batches)
             writer.add_scalar('Accuracy/train', avg_acc, total_batches)
             writer.add_scalar('Learning Rate', lr, total_batches)
+
             # Validation
             if global_step % config_dict['eval_interval'] == 0 and (batch_idx + 1) % grad_accum_steps == 0:
                 model.eval()
@@ -157,26 +173,24 @@ def main(args):
                         preds = torch.argmax(logits, dim=-1)
                         val_correct += (preds == val_y).sum().item()
                         val_tokens += val_y.numel()
+                
                 avg_val_loss = val_loss / min(config_dict['eval_iters'], len(val_loader))
                 val_acc = val_correct / val_tokens
                 
-                # TensorBoard logging
                 writer.add_scalar('Loss/val', avg_val_loss, total_batches)
                 writer.add_scalar('Accuracy/val', val_acc, total_batches)
                 
-                # Print validation results using tqdm to avoid breaking the progress bar
                 pbar.write("\n" + "=" * 60)
                 pbar.write(f"Validation @ step {global_step} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}")
                 pbar.write("=" * 60 + "\n")
                 model.train()
 
-        # Close the progress bar for the current epoch
         pbar.close()
 
         # Epoch summary
         epoch_time = time.time() - epoch_start
-        avg_epoch_loss = total_loss / len(train_loader)
-        avg_epoch_acc = total_correct / total_tokens
+        avg_epoch_loss = epoch_loss / len(train_loader)
+        avg_epoch_acc = epoch_correct / epoch_tokens
         
         print(f"\nEpoch {epoch+1} Summary | "
               f"Loss: {avg_epoch_loss:.4f} | Acc: {avg_epoch_acc:.4f} | "
@@ -190,6 +204,11 @@ def main(args):
                 'model_state': model.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
                 'loss': avg_epoch_loss,
+                'global_step': global_step,
+                'total_batches': total_batches,
+                'stoi': dataset.stoi,
+                'itos': dataset.itos,
+                'config': model_config.to_dict()
             }, ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
 
@@ -198,5 +217,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train GPT model with progress tracking")
     parser.add_argument("config", type=str, help="Path to config file")
+    parser.add_argument("--resume_from", type=str, help="Path to checkpoint to resume training", default=None)
     args = parser.parse_args()
     main(args)
